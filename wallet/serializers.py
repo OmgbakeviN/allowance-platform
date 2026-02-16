@@ -6,6 +6,8 @@ from accounts.permissions import IsParent, IsStudent
 from relationships.models import ParentStudentLink
 from .models import Wallet, WalletBucket, WalletTransaction
 from .services import get_or_create_wallet_for_student, credit, debit, spent_today
+from budgeting.allocation import compute_allocation
+from budgeting.models import BudgetPlan
 
 User = get_user_model()
 
@@ -54,10 +56,6 @@ class DepositSerializer(serializers.Serializer):
     external_ref = serializers.CharField(max_length=80, required=False, allow_blank=True)
     description = serializers.CharField(max_length=255, required=False, allow_blank=True)
 
-    bills_amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
-    savings_amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
-    daily_amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
-
     def validate_amount(self, v):
         if v <= 0:
             raise serializers.ValidationError("Amount must be > 0.")
@@ -70,22 +68,17 @@ class DepositSerializer(serializers.Serializer):
         if not (parent.is_superuser or getattr(parent, "role", None) in {"ADMIN", "PARENT"}):
             raise serializers.ValidationError("Only parents/admin can deposit.")
 
-        ok = ParentStudentLink.objects.filter(
-            parent=parent, student_id=student_id, status=ParentStudentLink.Status.ACTIVE
-        ).exists() or parent.is_superuser or getattr(parent, "role", None) == "ADMIN"
+        ok = (
+            ParentStudentLink.objects.filter(
+                parent=parent, student_id=student_id, status=ParentStudentLink.Status.ACTIVE
+            ).exists()
+            or parent.is_superuser
+            or getattr(parent, "role", None) == "ADMIN"
+        )
 
         if not ok:
             raise serializers.ValidationError("Parent not linked to this student.")
 
-        split_fields = ["bills_amount", "savings_amount", "daily_amount"]
-        provided = [f for f in split_fields if f in attrs]
-        if provided:
-            total = sum([attrs.get("bills_amount", Decimal("0")), attrs.get("savings_amount", Decimal("0")), attrs.get("daily_amount", Decimal("0"))])
-            if total != attrs["amount"]:
-                raise serializers.ValidationError("Split amounts must sum exactly to amount.")
-            for f in provided:
-                if attrs.get(f, Decimal("0")) < 0:
-                    raise serializers.ValidationError("Split amounts must be >= 0.")
         return attrs
 
     @transaction.atomic
@@ -95,31 +88,96 @@ class DepositSerializer(serializers.Serializer):
         wallet = get_or_create_wallet_for_student(student)
 
         amount = validated_data["amount"]
-        ext = validated_data.get("external_ref") or None
+        ext = (validated_data.get("external_ref") or "").strip() or None
         desc = validated_data.get("description", "")
 
-        bills = validated_data.get("bills_amount")
-        savings = validated_data.get("savings_amount")
-        daily = validated_data.get("daily_amount")
+        group_ref = ext or f"AUTO-{uuid4().hex[:10].upper()}"
 
-        if bills is None and savings is None and daily is None:
-            daily = amount
-            bills = Decimal("0")
-            savings = Decimal("0")
+        plan = (
+            BudgetPlan.objects.prefetch_related("bills")
+            .filter(student=student, status=BudgetPlan.Status.ACTIVE)
+            .order_by("-created_at")
+            .first()
+        )
 
         txns = []
-        if bills and bills > 0:
+
+        if not plan:
+            meta = {"allocation": "AUTO_FALLBACK", "group_ref": group_ref}
             txns.append(
-                credit(wallet, parent, WalletBucket.Type.BILLS, bills, WalletTransaction.TxnType.DEPOSIT, desc, external_ref=(ext + "-B") if ext else None, metadata={"student_id": student.id})
+                credit(
+                    wallet,
+                    parent,
+                    WalletBucket.Type.DAILY,
+                    amount,
+                    WalletTransaction.TxnType.DEPOSIT,
+                    desc,
+                    external_ref=(f"{group_ref}-DAILY"[:80]),
+                    metadata=meta,
+                )
             )
-        if savings and savings > 0:
+            return wallet, txns
+
+        alloc = compute_allocation(plan, Decimal(amount))
+
+        wallet.currency = alloc["currency"] or wallet.currency
+        wallet.daily_limit = Decimal(alloc["daily_limit"])
+        wallet.save(update_fields=["currency", "daily_limit"])
+
+        meta_base = {
+            "allocation": "AUTO_PLAN",
+            "group_ref": group_ref,
+            "plan_id": alloc["plan_id"],
+            "deposit_amount": alloc["deposit_amount"],
+            "savings_target": alloc["savings_target"],
+        }
+
+        bills_amount = Decimal(alloc["bills_allocated"])
+        savings_amount = Decimal(alloc["savings_allocated"])
+        daily_amount = Decimal(alloc["daily_allocated"])
+
+        if bills_amount > 0:
             txns.append(
-                credit(wallet, parent, WalletBucket.Type.SAVINGS, savings, WalletTransaction.TxnType.DEPOSIT, desc, external_ref=(ext + "-S") if ext else None, metadata={"student_id": student.id})
+                credit(
+                    wallet,
+                    parent,
+                    WalletBucket.Type.BILLS,
+                    bills_amount,
+                    WalletTransaction.TxnType.DEPOSIT,
+                    desc,
+                    external_ref=(f"{group_ref}-BILLS"[:80]),
+                    metadata={**meta_base, "bills_breakdown": alloc["bills_breakdown"]},
+                )
             )
-        if daily and daily > 0:
+
+        if savings_amount > 0:
             txns.append(
-                credit(wallet, parent, WalletBucket.Type.DAILY, daily, WalletTransaction.TxnType.DEPOSIT, desc, external_ref=(ext + "-D") if ext else None, metadata={"student_id": student.id})
+                credit(
+                    wallet,
+                    parent,
+                    WalletBucket.Type.SAVINGS,
+                    savings_amount,
+                    WalletTransaction.TxnType.DEPOSIT,
+                    desc,
+                    external_ref=(f"{group_ref}-SAVINGS"[:80]),
+                    metadata=meta_base,
+                )
             )
+
+        if daily_amount > 0:
+            txns.append(
+                credit(
+                    wallet,
+                    parent,
+                    WalletBucket.Type.DAILY,
+                    daily_amount,
+                    WalletTransaction.TxnType.DEPOSIT,
+                    desc,
+                    external_ref=(f"{group_ref}-DAILY"[:80]),
+                    metadata=meta_base,
+                )
+            )
+
         return wallet, txns
 
 

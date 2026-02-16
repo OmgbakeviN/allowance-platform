@@ -159,38 +159,26 @@ class WalletStudentTransactionsAPIView(generics.ListAPIView):
 
 @extend_schema(
     tags=["Wallet"],
-    summary="Dépôt parent vers étudiant (avec split optionnel)",
+    summary="Dépôt parent vers étudiant (allocation automatique)",
     description=(
-        "Crée un dépôt sur le wallet d’un étudiant lié.\n\n"
-        "Deux modes :\n"
-        "1) **Sans split** : si `bills_amount/savings_amount/daily_amount` ne sont pas fournis, "
-        "tout le montant va dans `DAILY`.\n"
-        "2) **Avec split** : `bills_amount + savings_amount + daily_amount` doit être **exactement égal** à `amount`.\n\n"
-        "⚠️ `external_ref` peut servir d’idempotence (éviter double dépôt)."
+        "Crée un dépôt sur le wallet d’un étudiant lié et **répartit automatiquement** selon le plan actif de l’étudiant.\n\n"
+        "Ordre d’allocation :\n"
+        "1) **BILLS** (charges fixes, par priorité)\n"
+        "2) **SAVINGS** (selon `savings_mode`: AMOUNT ou PERCENT)\n"
+        "3) **DAILY** (le reste)\n\n"
+        "Si l’étudiant **n’a pas de plan actif**, le dépôt va **100% dans DAILY**.\n\n"
+        "⚠️ `external_ref` sert de référence (et est suffixé automatiquement par bucket : -BILLS/-SAVINGS/-DAILY)."
     ),
     request=DepositSerializer,
     responses={201: DepositResponseSerializer},
     examples=[
         OpenApiExample(
-            "Requête (split)",
+            "Requête (allocation automatique)",
             value={
                 "student_id": 2,
                 "amount": "10000.00",
                 "description": "Allowance February",
-                "bills_amount": "3000.00",
-                "savings_amount": "2000.00",
-                "daily_amount": "5000.00",
-                "external_ref": "DEP-0001",
-            },
-            request_only=True,
-        ),
-        OpenApiExample(
-            "Requête (sans split => DAILY)",
-            value={
-                "student_id": 2,
-                "amount": "10000.00",
-                "description": "Allowance February",
-                "external_ref": "DEP-0002",
+                "external_ref": "DEP-0003",
             },
             request_only=True,
         ),
