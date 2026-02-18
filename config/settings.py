@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "relationships",
     "wallet",
     "budgeting",
+    "expenses",
 ]
 
 MIDDLEWARE = [
@@ -152,3 +153,6 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "API for Parent/Student budgeting & transfers",
     "VERSION": "1.0.0",
 }
+
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
