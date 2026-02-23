@@ -31,6 +31,7 @@ urlpatterns = [
     path("api/wallet/", include("wallet.urls")),
     path("api/budgeting/", include("budgeting.urls")),
     path("api/expenses/",include("expenses.urls")),
+    path("api/dashboard/", include("dashboard.urls")),
 ]
 
 if settings.DEBUG:
