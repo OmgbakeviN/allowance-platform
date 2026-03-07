@@ -32,6 +32,7 @@ urlpatterns = [
     path("api/budgeting/", include("budgeting.urls")),
     path("api/expenses/",include("expenses.urls")),
     path("api/dashboard/", include("dashboard.urls")),
+    path("api/parent-account/", include("parent_account.urls"))
 ]
 
 if settings.DEBUG:

@@ -9,6 +9,7 @@ from .models import Wallet, WalletBucket, WalletTransaction
 from .services import get_or_create_wallet_for_student, credit, debit, spent_today
 from budgeting.allocation import compute_allocation
 from budgeting.models import BudgetPlan
+from parent_account.services import transfer_out
 
 User = get_user_model()
 
@@ -102,6 +103,14 @@ class DepositSerializer(serializers.Serializer):
         )
 
         txns = []
+
+        parent_account, transfer_txn = transfer_out(
+            parent=parent,
+            amount=amount,
+            external_ref=f"{group_ref}-TRANSFER"[:80],
+            description=desc,
+            metadata={"student_id": student.id},
+        )
 
         if not plan:
             meta = {"allocation": "AUTO_FALLBACK", "group_ref": group_ref}
